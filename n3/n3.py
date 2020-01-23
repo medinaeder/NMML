@@ -44,7 +44,6 @@ class HyperelasticityProblem(BifurcationProblem):
 
     def parameters(self):
         eps = Constant(0)
-
         return [(eps, "eps", r"$\epsilon$")]
 
     def psi(self,u,params): 
@@ -71,7 +70,6 @@ class HyperelasticityProblem(BifurcationProblem):
         # Helmholtz Free Energy
         Energy = self.psi(u,params)*dx  
         F = derivative(Energy, u, v)
-
         return F
 
     def boundary_conditions(self, V, params):
@@ -132,30 +130,20 @@ class HyperelasticityProblem(BifurcationProblem):
         return float("inf")
 
     def transform_guess(self, state, task, io):
+        # Include the random perturbation to explore nontrivial branch
         state.assign(state+self.random_perturbation)
 
     def squared_norm(self, a, b, params):
         return inner(a - b, a - b)*dx + inner(grad(a - b), grad(a - b))*dx
+
     def solver(self, problem, params, solver_params, prefix="", **kwargs):
-        # Set the rigid body modes for use in AMG
 
         s = SNUFLSolver(problem, solver_parameters=solver_params, prefix=prefix, **kwargs)
         snes = s.snes
         snes.setFromOptions()
 
-        if snes.ksp.type != "preonly":
-            # Convert rigid body modes (computed in self.function_space above) to PETSc Vec
-            rbms = list(map(vec, self.rbms))
-
-            # Create the PETSc nullspace
-            nullsp = PETSc.NullSpace().create(vectors=rbms, constant=False, comm=snes.comm)
-
-            (A, P) = snes.ksp.getOperators()
-            A.setNearNullSpace(nullsp)
-            P.setNearNullSpace(nullsp)
-
         return s
-    def compute_stabilityx(self, params, branchid, u, hint=None):
+    def compute_stability(self, params, branchid, u, hint=None):
         V = u.function_space()
         trial = TrialFunction(V)
         test  = TestFunction(V)
@@ -189,17 +177,6 @@ class HyperelasticityProblem(BifurcationProblem):
         if hint is not None:
             initial_space = [vec(x) for x in hint]
             eps.setInitialSpace(initial_space)
-
-        if eps.st.ksp.type != "preonly":
-            # Convert rigid body modes (computed in self.function_space above) to PETSc Vec
-            rbms = list(map(vec, self.rbms))
-
-            # Create the PETSc nullspace
-            nullsp = PETSc.NullSpace().create(vectors=rbms, constant=False, comm=comm)
-
-            (A, P) = eps.st.ksp.getOperators()
-            A.setNearNullSpace(nullsp)
-            P.setNearNullSpace(nullsp)
 
         # Solve the eigenproblem
         eps.solve()
@@ -253,35 +230,11 @@ class HyperelasticityProblem(BifurcationProblem):
                "st_pc_type": "lu",
                "st_pc_factor_mat_solver_package": "mumps",
                }
-    def postprocess(self, solution, params, branchid,window):
-        # fetch the eigenfunctions associated with our point
-        io2 = self.io()
-        mesh = self.mesh(backend.comm_world)
-        parameters = self.parameters()
-        functionals = self.functionals()
-        io2.setup(parameters,functionals, self.function_space(mesh))
-        d_l = io2.fetch_stability(params,[branchid],True)
-        sol = io2.fetch_solutions(params,[branchid])
-        V = self.function_space(self.mesh_)
-        try: os.mkdir('test')
-        except OSError: pass 
-        pvd_filename  = os.path.join('test', "egfunc.pvd")
-        pvd = backend.File(pvd_filename);
-        for d in d_l: 
-            for i,e_v in enumerate(d["eigenvalues"]):
-                e_f=d["eigenfunctions"][i]
-                e_f.rename("Solution", "Solution")
-                self.save_pvd(e_f, pvd);
-        
-        try: Popen(["paraview", pvd_filename])
-        except Exception: pass 
-        
-    
+
 
 if __name__ == "__main__":
-
     problem = HyperelasticityProblem()
     dc = DeflatedContinuation(problem=HyperelasticityProblem(), teamsize=1, verbose=True, clear_output=True)
     e_max = 0.07
     params = list(arange(0.001, e_max, 0.0001)) + [e_max]
-    dc.run(values={"eps": params})
+    dc.run(values={"eps": params[1]})
