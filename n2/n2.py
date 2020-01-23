@@ -33,18 +33,18 @@ class HyperelasticityProblem(BifurcationProblem):
                 Constant((1, 0)),
                 Expression(("-x[1]", "x[0]"), degree=1, mpi_comm=mesh.mpi_comm())]
         self.rbms = [interpolate(rbm, V) for rbm in rbms]
+
+        # Print system size
         print(V.dim())
 
         return V
 
     def parameters(self):
+        # Applied Strain
         eps = Constant(0)
-
         return [(eps, "eps", r"$\epsilon$")]
 
     def psi(self,u,params): 
-        B   = Constant((0.0, 0.000)) # Body force per unit volume
-
         # Kinematics
         I = Identity(2)             # Identity tensor
         F = I + grad(u)             # Deformation gradient
@@ -61,12 +61,11 @@ class HyperelasticityProblem(BifurcationProblem):
         # Stored strain energy density (compressible neo-Hookean model)
         psi_ = (mu/2)*(Ic - 2) - mu*ln(J) + (lmbda/2)*(ln(J))**2 # PEF
         
-        
-
         return psi_
+
     def residual(self, u, params, v):
         # Total potential energy
-        Energy = self.psi(u,params)*dx  #- dot(T, u)*ds
+        Energy = self.psi(u,params)*dx
         F = derivative(Energy, u, v)
 
         return F
@@ -78,9 +77,10 @@ class HyperelasticityProblem(BifurcationProblem):
 
         bcl = DirichletBC(V, (0.0,0.0), left)
         bcr = DirichletBC(V, (0.0,-eps), right)
-
         return [bcl,bcr]
+
     def functionals(self):
+        # Tracking Metrics
         def strain_energy(u, params):
             return assemble(self.psi(u,params)*dx)
         def force(u, params):
@@ -116,7 +116,7 @@ class HyperelasticityProblem(BifurcationProblem):
             return fs
 
         return [(strain_energy, "Energy", r"$\psi$"),
-                (force, "Force", r"Stress/E")]
+                (force, "Force", r"Stress/\mu")]
 
 
     def number_initial_guesses(self, params):
@@ -126,39 +126,26 @@ class HyperelasticityProblem(BifurcationProblem):
         return interpolate(Constant((0,0)),V)
 
     def number_solutions(self, params):
-        # Here I know the number of solutions for each value of eps.
-        # This cheating allows me to calculate the bifurcation diagram
-        # much more quickly. This can be disabled without changing the
-        # correctness of the calculations.
-        eps = params[0]
         return float("inf")
 
     def transform_guess(self, state, task, io):
-        C  = Constant((0,0))
+        # If necessary apply a perturbation to break symmetry and explore non-trivial branch
+        C  = interpolate(Constant((0,0)),state.function_space()) 
         state.assign(state+C)
 
     def squared_norm(self, a, b, params):
+        # Measure used to deflate known solutions
         return inner(a - b, a - b)*dx + inner(grad(a - b), grad(a - b))*dx
-    def solver(self, problem, params, solver_params, prefix="", **kwargs):
-        # Set the rigid body modes for use in AMG
 
+
+    def solver(self, problem, params, solver_params, prefix="", **kwargs):
         s = SNUFLSolver(problem, solver_parameters=solver_params, prefix=prefix, **kwargs)
         snes = s.snes
         snes.setFromOptions()
 
-        if snes.ksp.type != "preonly":
-            # Convert rigid body modes (computed in self.function_space above) to PETSc Vec
-            rbms = list(map(vec, self.rbms))
-
-            # Create the PETSc nullspace
-            nullsp = PETSc.NullSpace().create(vectors=rbms, constant=False, comm=snes.comm)
-
-            (A, P) = snes.ksp.getOperators()
-            A.setNearNullSpace(nullsp)
-            P.setNearNullSpace(nullsp)
-
         return s
-    def compute_stabilityx(self, params, branchid, u, hint=None):
+
+    def compute_stability(self, params, branchid, u, hint=None):
         V = u.function_space()
         trial = TrialFunction(V)
         test  = TestFunction(V)
@@ -192,17 +179,6 @@ class HyperelasticityProblem(BifurcationProblem):
         if hint is not None:
             initial_space = [vec(x) for x in hint]
             eps.setInitialSpace(initial_space)
-
-        if eps.st.ksp.type != "preonly":
-            # Convert rigid body modes (computed in self.function_space above) to PETSc Vec
-            rbms = list(map(vec, self.rbms))
-
-            # Create the PETSc nullspace
-            nullsp = PETSc.NullSpace().create(vectors=rbms, constant=False, comm=comm)
-
-            (A, P) = eps.st.ksp.getOperators()
-            A.setNearNullSpace(nullsp)
-            P.setNearNullSpace(nullsp)
 
         # Solve the eigenproblem
         eps.solve()
@@ -256,37 +232,7 @@ class HyperelasticityProblem(BifurcationProblem):
                "st_pc_type": "lu",
                "st_pc_factor_mat_solver_package": "mumps",
                }
-    def postprocess(self, solution, params, branchid,window):
-        # fetch the eigenfunctions associated with our point
-        io2 = self.io()
-        mesh = self.mesh(backend.comm_world)
-        parameters = self.parameters()
-        functionals = self.functionals()
-        io2.setup(parameters,functionals, self.function_space(mesh))
-        d_l = io2.fetch_stability(params,[branchid],True)
-        sol = io2.fetch_solutions(params,[branchid])
-        V = self.function_space(self.mesh_)
-        try: os.mkdir('test')
-        except OSError: pass 
-        pvd_filename  = os.path.join('test', "egfunc.pvd")
-        pvd = backend.File(pvd_filename);
-        for d in d_l: 
-            for i,e_v in enumerate(d["eigenvalues"]):
-                e_f=d["eigenfunctions"][i]
-                e_f.rename("Solution", "Solution")
-                #print(i,e_v,e_f)
-                e2 = project(0.01*e_f+sol[0],V)
-                #e2 =  0.01*e_f+sol[0]
 
-                # Uncomment to only save eigenfunction
-                #self.save_pvd(e_f, pvd);
-                # Save the eigenfunction on top of the solution    
-                self.save_pvd(e2,pvd)
-        
-        try: Popen(["paraview", pvd_filename])
-        except Exception: pass 
-        
-    
 
 if __name__ == "__main__":
 
@@ -294,4 +240,4 @@ if __name__ == "__main__":
     dc = DeflatedContinuation(problem=HyperelasticityProblem(), teamsize=1, verbose=True, clear_output=True)
     e_max = 0.08
     params = list(arange(0.001, e_max, 0.001)) + [e_max]
-    dc.run(values={"eps": params})
+    dc.run(values={"eps": params[1]})
