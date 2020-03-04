@@ -24,7 +24,7 @@ title = {Navigating the landscape of nonlinear mechanical metamaterials for adva
 }
 ```
 
-# Research Article Publisher version (Open Access): https://journals.aps.org/prb/abstract/10.1103/PhysRevB.101.064101
+# Research Article Publisher version: https://journals.aps.org/prb/abstract/10.1103/PhysRevB.101.064101
 or, **Click on Image Below**
 [![Abstract](./images/abstract.png)](https://journals.aps.org/prb/abstract/10.1103/PhysRevB.101.064101)
 
